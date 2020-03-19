@@ -39,7 +39,7 @@ def test_rouge(cand, ref, temp_dir='./tmp'):
             with open(tmp_dir + "/reference/ref.{}.txt".format(i), "w",
                       encoding="utf-8") as f:
                 f.write(references[i])
-        r = pyrouge.Rouge155(log_level=logging.WARNING)
+        r = pyrouge.Rouge155()
         r.model_dir = tmp_dir + "/reference/"
         r.system_dir = tmp_dir + "/candidate/"
         r.model_filename_pattern = 'ref.#ID#.txt'
@@ -52,7 +52,8 @@ def test_rouge(cand, ref, temp_dir='./tmp'):
             shutil.rmtree(tmp_dir)
     return results_dict
 
-def evaluate(bart, bsz, count, datadir, outdir, visible_device=-1, test_fname='test.hypo'):
+def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
+            visible_device=-1, test_fname='test.hypo'):
     device = f'cuda:{visible_device}' if visible_device != -1 and torch.cuda.is_available() else 'cpu'
     bart.to(torch.device(device))
     bart.eval()
@@ -66,7 +67,11 @@ def evaluate(bart, bsz, count, datadir, outdir, visible_device=-1, test_fname='t
             if count % bsz == 0:
                 with torch.no_grad():
                     # import ipdb; ipdb.set_trace()
-                    hypotheses_batch = bart.sample(slines, beam=6, lenpen=1.0, max_len_b=60, min_len=10, no_repeat_ngram_size=3)
+                    hypotheses_batch = bart.sample(slines, beam=decoder_params['beam'], 
+                                                    lenpen=decoder_params['lenpen'], 
+                                                    max_len_b=decoder_params['max_len_b'],
+                                                    min_len=decoder_params['min_len'],
+                                                    no_repeat_ngram_size=decoder_params['no_repeat_ngram_size'])
                 for hypothesis in hypotheses_batch:
                     fout.write(hypothesis + '\n')
                     fout.flush()
@@ -76,7 +81,11 @@ def evaluate(bart, bsz, count, datadir, outdir, visible_device=-1, test_fname='t
             count += 1
         if slines != []:
             # import ipdb; ipdb.set_trace()
-            hypotheses_batch = bart.sample(slines, beam=6, lenpen=1.0, max_len_b=60, min_len=10, no_repeat_ngram_size=3)
+            hypotheses_batch = bart.sample(slines, beam=decoder_params['beam'], 
+                                                    lenpen=decoder_params['lenpen'], 
+                                                    max_len_b=decoder_params['max_len_b'],
+                                                    min_len=decoder_params['min_len'],
+                                                    no_repeat_ngram_size=decoder_params['no_repeat_ngram_size'])
             for hypothesis in hypotheses_batch:
                 fout.write(hypothesis + '\n')
                 fout.flush()
@@ -95,6 +104,11 @@ if __name__=='__main__':
     parser.add_argument('--batch_size', '--bsz', default=32, type=int, dest='bsz')
     parser.add_argument('--visible_device', default=0, type=int)
     parser.add_argument('--test_fname', default='test.hypo')
+    parser.add_argument('--beam', default=4, type=int)
+    parser.add_argument('--lenpen', default=2.0, type=float)
+    parser.add_argument('--max_len_b', default=140, type=int)
+    parser.add_argument('--min_len', default=55, type=int)
+    parser.add_argument('--no_repeat_ngram_size', default=3, type=int)
     args = parser.parse_args()
 
     # evaluator = Rouge()
@@ -109,10 +123,23 @@ if __name__=='__main__':
         data_name_or_path=args.data_name_or_path,
         task='translation'
     )
+
+    print(bart)
+
     args.datadir = args.data_name_or_path.split('-')[0]
+
+    decoder_params ={
+        'beam': args.beam,
+        'lenpen': args.lenpen,
+        'max_len_b': args.max_len_b,
+        'min_len': args.min_len, 
+        'no_repeat_ngram_size': args.no_repeat_ngram_size
+    }
 
     if not args.outdir:
         args.outdir = args.checkpoint_dir
-    evaluate(bart, args.bsz, args.count, args.datadir, args.outdir, 
+    evaluate(bart, args.bsz, args.count, 
+            args.datadir, args.outdir, 
+            decoder_params, 
             visible_device=args.visible_device,
             test_fname=args.test_fname)
