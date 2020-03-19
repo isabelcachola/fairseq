@@ -52,21 +52,21 @@ def test_rouge(cand, ref, temp_dir='./tmp'):
             shutil.rmtree(tmp_dir)
     return results_dict
 
-def evaluate(bart, bsz, count, datadir, outdir, visible_device=-1):
+def evaluate(bart, bsz, count, datadir, outdir, visible_device=-1, test_fname='test.hypo'):
     device = f'cuda:{visible_device}' if visible_device != -1 and torch.cuda.is_available() else 'cpu'
     bart.to(torch.device(device))
     bart.eval()
     bart.half()
     source_fname = os.path.join(datadir, 'test.source')
-    pred_fname = os.path.join(outdir, 'test.hypo')
-    with open(source_fname) as source, open(pred_fname, 'w') as fout:
+    pred_fname = os.path.join(outdir, test_fname)
+    with open(source_fname, encoding="utf-8") as source, open(pred_fname, 'w', encoding="utf-8") as fout:
         sline = source.readline().strip()
         slines = [sline]
         for sline in tqdm(source):
             if count % bsz == 0:
                 with torch.no_grad():
+                    # import ipdb; ipdb.set_trace()
                     hypotheses_batch = bart.sample(slines, beam=6, lenpen=1.0, max_len_b=60, min_len=10, no_repeat_ngram_size=3)
-
                 for hypothesis in hypotheses_batch:
                     fout.write(hypothesis + '\n')
                     fout.flush()
@@ -75,6 +75,7 @@ def evaluate(bart, bsz, count, datadir, outdir, visible_device=-1):
             slines.append(sline.strip())
             count += 1
         if slines != []:
+            # import ipdb; ipdb.set_trace()
             hypotheses_batch = bart.sample(slines, beam=6, lenpen=1.0, max_len_b=60, min_len=10, no_repeat_ngram_size=3)
             for hypothesis in hypotheses_batch:
                 fout.write(hypothesis + '\n')
@@ -91,8 +92,9 @@ if __name__=='__main__':
     # parser.add_argument('--datadir', default='tldr_data/')
     parser.add_argument('--outdir', default='')
     parser.add_argument('--count', default=1, type=int)
-    parser.add_argument('--batch_size', default=32, type=int, dest='bsz')
+    parser.add_argument('--batch_size', '--bsz', default=32, type=int, dest='bsz')
     parser.add_argument('--visible_device', default=0, type=int)
+    parser.add_argument('--test_fname', default='test.hypo')
     args = parser.parse_args()
 
     # evaluator = Rouge()
@@ -107,11 +109,10 @@ if __name__=='__main__':
         data_name_or_path=args.data_name_or_path,
         task='translation'
     )
-
-    import ipdb; ipdb.set_trace()
-
     args.datadir = args.data_name_or_path.split('-')[0]
 
     if not args.outdir:
-        args.outdir = args.checkpoint_dir_or_name
-    evaluate(bart, args.bsz, args.count, args.datadir, args.outdir, visible_device=args.visible_device)
+        args.outdir = args.checkpoint_dir
+    evaluate(bart, args.bsz, args.count, args.datadir, args.outdir, 
+            visible_device=args.visible_device,
+            test_fname=args.test_fname)
