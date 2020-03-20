@@ -9,6 +9,7 @@ import shutil
 import time
 import re
 import logging
+import numpy as np
 
 def filter_rouge(r):
     _r = {}
@@ -20,7 +21,7 @@ def filter_rouge(r):
 def test_rouge(cand, ref, temp_dir='./tmp'):
     candidates = [line.strip() for line in open(cand, encoding='utf-8')]
     references = [line.strip() for line in open(ref, encoding='utf-8')]
-    assert len(candidates) == len(references)
+    assert len(candidates) == len(references), f'{temp_dir}: len cand {len(candidates)} len ref {len(references)}'
 
     cnt = len(candidates)
     current_time = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
@@ -53,9 +54,10 @@ def test_rouge(cand, ref, temp_dir='./tmp'):
     return results_dict
 
 def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
-            visible_device=-1, test_fname='test.hypo'):
-    device = f'cuda:{visible_device}' if visible_device != -1 and torch.cuda.is_available() else 'cpu'
-    bart.to(torch.device(device))
+            test_fname='test.hypo'):
+    # device = f'cuda:{visible_device}' if visible_device != -1 and torch.cuda.is_available() else 'cpu'
+    # bart.to(torch.device(device))
+    bart.cuda()
     bart.eval()
     bart.half()
     source_fname = os.path.join(datadir, 'test.source')
@@ -91,40 +93,73 @@ def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
                 fout.flush()
     r = test_rouge(os.path.join(datadir, 'test.target'), pred_fname)
     r = filter_rouge(r)
-    pprint(r)
+
+    return r
+
+def tune_decoder_params(bart, bsz, count, datadir, 
+                        max_len_b, min_len, no_repeat_ngram_size,
+                        outdir, test_fname='test.hypo'):
+    print('Tuning decoder params...')
+    
+    beams = list(range(2,6))
+    lenpens = list(np.arange(0.2, 1.2, 0.2))
+    
+    n = len(beams) * len(lenpens)
+    pbar = tqdm(total=n)
+    
+    decoder_params ={
+        'max_len_b': args.max_len_b,
+        'min_len': args.min_len, 
+        'no_repeat_ngram_size': args.no_repeat_ngram_size
+    }
+
+    best_r1 = 0.
+    best_r = None
+    best_beam = None
+    best_lenpen = None
+
+    for  b in beams:
+        for l in lenpens:
+            decoder_params["beam"] = b
+            decoder_params["lenpen"] = l 
+
+            r = evaluate(bart, bsz, count, datadir, outdir, decoder_params,
+                        test_fname=f'tune-beam{b}-lenpen{l}-{test_fname}')
+
+            if r['rouge_1_f_score'] > best_r1:
+                best_r1 = r['rouge_1_f_score']
+                best_r = r
+                best_beam = b
+                best_lenpen = l
+            pbar.update(1)
+    pbar.close()
+    print(f'Best beam: {best_beam} \t Best lenpen: {best_lenpen}')
+    return r
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_name_or_path', default='tldr_data_ao-bin')
+    parser.add_argument('data_name_or_path', default='tldr_data_ao-bin')
     parser.add_argument('--checkpoint_file', default='checkpoint_best.pt')
     parser.add_argument('--checkpoint_dir', default='checkpoints/')
     # parser.add_argument('--datadir', default='tldr_data/')
     parser.add_argument('--outdir', default='')
     parser.add_argument('--count', default=1, type=int)
     parser.add_argument('--batch_size', '--bsz', default=32, type=int, dest='bsz')
-    parser.add_argument('--visible_device', default=0, type=int)
     parser.add_argument('--test_fname', default='test.hypo')
-    parser.add_argument('--beam', default=4, type=int)
-    parser.add_argument('--lenpen', default=2.0, type=float)
-    parser.add_argument('--max_len_b', default=140, type=int)
-    parser.add_argument('--min_len', default=55, type=int)
+    parser.add_argument('--beam', default=6, type=int)
+    parser.add_argument('--lenpen', default=1.0, type=float)
+    parser.add_argument('--max_len_b', default=60, type=int)
+    parser.add_argument('--min_len', default=10, type=int)
     parser.add_argument('--no_repeat_ngram_size', default=3, type=int)
+    parser.add_argument('--tune', action='store_true', default=False)
     args = parser.parse_args()
 
-    # evaluator = Rouge()
-    # if args.checkpoint_dir_or_name == 'bart.large':
-    #     bart = torch.hub.load('pytorch/fairseq', 'bart.large')
-    # elif args.checkpoint_dir_or_name == 'bart.large.xsum':
-    #     bart = torch.hub.load('pytorch/fairseq', 'bart.large.xsum')
-    # else:
     bart = BARTModel.from_pretrained(
         args.checkpoint_dir,
         checkpoint_file=args.checkpoint_file,
         data_name_or_path=args.data_name_or_path,
         task='translation'
     )
-
-    print(bart)
 
     args.datadir = args.data_name_or_path.split('-')[0]
 
@@ -138,8 +173,15 @@ if __name__=='__main__':
 
     if not args.outdir:
         args.outdir = args.checkpoint_dir
-    evaluate(bart, args.bsz, args.count, 
-            args.datadir, args.outdir, 
-            decoder_params, 
-            visible_device=args.visible_device,
-            test_fname=args.test_fname)
+
+    if args.tune:
+        pprint(tune_decoder_params(bart, args.bsz, args.count, 
+                args.datadir,
+                args.max_len_b, args.min_len, args.no_repeat_ngram_size, 
+                args.outdir, 
+                test_fname=args.test_fname))
+    else:
+        pprint(evaluate(bart, args.bsz, args.count, 
+                args.datadir, args.outdir, 
+                decoder_params, 
+                test_fname=args.test_fname))
