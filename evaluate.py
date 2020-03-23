@@ -101,7 +101,7 @@ def tune_decoder_params(bart, bsz, count, datadir,
                         outdir, test_fname='test.hypo'):
     print('Tuning decoder params...')
     
-    beams = list(range(2,6))
+    beams = list(range(2,9))
     lenpens = list(np.arange(0.2, 1.2, 0.2))
     
     n = len(beams) * len(lenpens)
@@ -126,7 +126,7 @@ def tune_decoder_params(bart, bsz, count, datadir,
             r = evaluate(bart, bsz, count, datadir, outdir, decoder_params,
                         test_fname=f'tune-beam{b}-lenpen{l}-{test_fname}')
 
-            if r['rouge_1_f_score'] > best_r1:
+            if float(r['rouge_1_f_score']) > best_r1:
                 best_r1 = r['rouge_1_f_score']
                 best_r = r
                 best_beam = b
