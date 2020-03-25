@@ -1,7 +1,8 @@
 import torch
 from fairseq.models.bart import BARTModel
 import argparse
-import pyrouge
+# import pyrouge
+import rouge
 from pprint import pprint
 from tqdm import tqdm
 import os
@@ -10,6 +11,7 @@ import time
 import re
 import logging
 import numpy as np
+import json 
 
 def filter_rouge(r):
     _r = {}
@@ -20,41 +22,61 @@ def filter_rouge(r):
 
 def test_rouge(cand, ref, temp_dir='./tmp'):
     candidates = [line.strip() for line in open(cand, encoding='utf-8')]
-    references = [line.strip() for line in open(ref, encoding='utf-8')]
+    references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
     assert len(candidates) == len(references), f'{temp_dir}: len cand {len(candidates)} len ref {len(references)}'
 
     cnt = len(candidates)
-    current_time = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())
-    tmp_dir = os.path.join(temp_dir, "rouge-tmp-{}".format(current_time))
-    os.makedirs(tmp_dir, exist_ok=True)
-    os.makedirs(tmp_dir + "/candidate", exist_ok=True)
-    os.makedirs(tmp_dir + "/reference", exist_ok=True)
-    try:
+    evaluator = rouge.Rouge()
 
-        for i in range(cnt):
-            if len(references[i]) < 1:
-                continue
-            with open(tmp_dir + "/candidate/cand.{}.txt".format(i), "w",
-                      encoding="utf-8") as f:
-                f.write(candidates[i])
-            with open(tmp_dir + "/reference/ref.{}.txt".format(i), "w",
-                      encoding="utf-8") as f:
-                f.write(references[i])
-        r = pyrouge.Rouge155()
-        r.model_dir = tmp_dir + "/reference/"
-        r.system_dir = tmp_dir + "/candidate/"
-        r.model_filename_pattern = 'ref.#ID#.txt'
-        r.system_filename_pattern = r'cand.(\d+).txt'
-        rouge_results = r.convert_and_evaluate()
-        # print(rouge_results)
-        results_dict = r.output_to_dict(rouge_results)
-    finally:
-        if os.path.isdir(tmp_dir):
-            shutil.rmtree(tmp_dir)
-    return results_dict
+    all_scores = []
+
+    for cand_idx, cand in enumerate(candidates):
+        curr_targets = references[cand_idx]
+        curr_scores = []
+        for tgt in curr_targets:
+            r = evaluator.get_scores(cand, tgt)
+            curr_scores += r
+        # Take the max of curr scores
+        max_rouge = 0.
+        max_idx = 0
+        for score_idx, s in enumerate(curr_scores):
+            if s['rouge-1']['f'] > max_rouge:
+                max_rouge = s['rouge-1']['f']
+                max_idx = score_idx
+        all_scores.append(curr_scores[max_idx])
+    
+    # Average across all scores
+    avg_scores = {"rouge-1": {
+                    "f": [],
+                    "p": [],
+                    "r":[]
+                    },
+                "rouge-2": {
+                    "f": [],
+                    "p": [],
+                    "r": []
+                    },
+                "rouge-l": {
+                    "f": [],
+                    "p": [],
+                    "r": []
+                    }
+                }
+    for score in all_scores:
+        for r_type in score.keys():
+            for m_type in score[r_type].keys():
+                x = score[r_type][m_type]
+                avg_scores[r_type][m_type].append(x)
+
+    for r_type in avg_scores.keys():
+        for m_type in avg_scores[r_type].keys():
+            x = avg_scores[r_type][m_type]
+            avg_scores[r_type][m_type] = np.mean(x)
+
+    return avg_scores
 
 def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
-            test_fname='test.hypo'):
+            test_fname='test.hypo', multitarget=False):
     # device = f'cuda:{visible_device}' if visible_device != -1 and torch.cuda.is_available() else 'cpu'
     # bart.to(torch.device(device))
     bart.cuda()
@@ -91,14 +113,16 @@ def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
             for hypothesis in hypotheses_batch:
                 fout.write(hypothesis + '\n')
                 fout.flush()
-    r = test_rouge(os.path.join(datadir, 'test.target'), pred_fname)
-    r = filter_rouge(r)
+    ref_fname = 'test-multitarget.jsonl' if multitarget else 'test.jsonl'
+    r = test_rouge(pred_fname, os.path.join(datadir, ref_fname))
+    # r = filter_rouge(r)
 
     return r
 
 def tune_decoder_params(bart, bsz, count, datadir, 
                         max_len_b, min_len, no_repeat_ngram_size,
-                        outdir, test_fname='test.hypo'):
+                        outdir, test_fname='test.hypo',
+                        multitarget=False):
     print('Tuning decoder params...')
     
     beams = list(range(2,9))
@@ -124,10 +148,11 @@ def tune_decoder_params(bart, bsz, count, datadir,
             decoder_params["lenpen"] = l 
 
             r = evaluate(bart, bsz, count, datadir, outdir, decoder_params,
-                        test_fname=f'tune-beam{b}-lenpen{l}-{test_fname}')
+                        test_fname=f'tune-beam{b}-lenpen{l}-{test_fname}',
+                        multitarget=multitarget)
 
-            if float(r['rouge_1_f_score']) > best_r1:
-                best_r1 = r['rouge_1_f_score']
+            if float(r['rouge-1']['f']) > best_r1:
+                best_r1 = r['rouge-1']['f']
                 best_r = r
                 best_beam = b
                 best_lenpen = l
@@ -138,7 +163,7 @@ def tune_decoder_params(bart, bsz, count, datadir,
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('data_name_or_path', default='tldr_data_ao-bin')
+    parser.add_argument('datadir', default='tldr_data_ao')
     parser.add_argument('--checkpoint_file', default='checkpoint_best.pt')
     parser.add_argument('--checkpoint_dir', default='checkpoints/')
     # parser.add_argument('--datadir', default='tldr_data/')
@@ -152,16 +177,15 @@ if __name__=='__main__':
     parser.add_argument('--min_len', default=10, type=int)
     parser.add_argument('--no_repeat_ngram_size', default=3, type=int)
     parser.add_argument('--tune', action='store_true', default=False)
+    parser.add_argument('--multitarget', action='store_true', default=False)
     args = parser.parse_args()
 
     bart = BARTModel.from_pretrained(
         args.checkpoint_dir,
         checkpoint_file=args.checkpoint_file,
-        data_name_or_path=args.data_name_or_path,
+        data_name_or_path=args.datadir + '-bin',
         task='translation'
     )
-
-    args.datadir = args.data_name_or_path.split('-')[0]
 
     decoder_params ={
         'beam': args.beam,
@@ -179,9 +203,11 @@ if __name__=='__main__':
                 args.datadir,
                 args.max_len_b, args.min_len, args.no_repeat_ngram_size, 
                 args.outdir, 
-                test_fname=args.test_fname))
+                test_fname=args.test_fname,
+                multitarget=args.multitarget))
     else:
         pprint(evaluate(bart, args.bsz, args.count, 
                 args.datadir, args.outdir, 
                 decoder_params, 
-                test_fname=args.test_fname))
+                test_fname=args.test_fname,
+                multitarget=args.multitarget))
