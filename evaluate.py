@@ -1,50 +1,79 @@
 import torch
 from fairseq.models.bart import BARTModel
 import argparse
-# import pyrouge
-import rouge
 from pprint import pprint
 from tqdm import tqdm
 import os
+from os.path import join
 import shutil
 import time
 import re
 import logging
 import numpy as np
 import json 
+import random
+import string
+import shutil
+import files2rouge
+import time
 
-def filter_rouge(r):
-    _r = {}
-    for key, value in r.items():
-        if re.match('rouge_[1l2]_\w+', key):
-            _r[key] = value
-    return _r
+def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/'):
+    print(cand)
+    print(ref)
+    def random_string(stringLength=8):
+        """Generate a random string of fixed length """
+        letters= string.ascii_lowercase
+        return ''.join(random.sample(letters,stringLength))
+    tmp_path = join(tmp_dir, 'tmp'+random_string())
+    os.makedirs(tmp_path)
+    # print(tmp_path)
+    hyp_path = join(tmp_path, 'hyp.txt')
+    ref_path = join(tmp_path, 'ref.txt')
 
-def test_rouge(cand, ref, temp_dir='./tmp'):
-    candidates = [line.strip() for line in open(cand, encoding='utf-8')]
+    candidates = [line.strip().lower() for line in open(cand, encoding='utf-8')]
     references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
+    paper_ids = [json.loads(line.strip())['paper_id'] for line in open(ref, encoding='utf-8')]
     assert len(candidates) == len(references), f'{temp_dir}: len cand {len(candidates)} len ref {len(references)}'
 
     cnt = len(candidates)
-    evaluator = rouge.Rouge()
+    # evaluator = rouge.Rouge()
 
     all_scores = []
+    save_scores = []
 
+    # For each prediction
     for cand_idx, cand in enumerate(candidates):
         curr_targets = references[cand_idx]
         curr_scores = []
+        if type(curr_targets) == str:
+            curr_targets = [curr_targets]
+        hyp = open(join(tmp_path, 'hyp.txt'), 'w')
+        hyp.write(cand)
+        hyp.close()
+        # import ipdb; ipdb.set_trace()
         for tgt in curr_targets:
-            r = evaluator.get_scores(cand, tgt)
-            curr_scores += r
+            tgt = tgt.lower().strip('\n')
+            ref = open(join(tmp_path, 'ref.txt'), 'w')
+            ref.write(tgt)
+            ref.close()
+            try:
+                _r = files2rouge.run(ref_path, hyp_path, to_json=True)
+            except Exception as e:
+                print(e)
+                exit(0)
+            curr_scores.append(_r)
         # Take the max of curr scores
-        max_rouge = 0.
-        max_idx = 0
-        for score_idx, s in enumerate(curr_scores):
-            if s['rouge-1']['f'] > max_rouge:
-                max_rouge = s['rouge-1']['f']
-                max_idx = score_idx
+        r1 = [r['rouge-1']['f'] for r in curr_scores]
+        max_idx = r1.index(max(r1))
+
+        save_scores.append({
+                        'paper_id': paper_ids[cand_idx],
+                        'all_scores': curr_scores,
+                        'max_idx': max_idx,
+                        'prediction': cand,
+                        'target': curr_targets
+                            })
         all_scores.append(curr_scores[max_idx])
-    
     # Average across all scores
     avg_scores = {"rouge-1": {
                     "f": [],
@@ -66,13 +95,20 @@ def test_rouge(cand, ref, temp_dir='./tmp'):
         for r_type in score.keys():
             for m_type in score[r_type].keys():
                 x = score[r_type][m_type]
+                # print(x)
                 avg_scores[r_type][m_type].append(x)
-
+    #import ipdb; ipdb.set_trace()          
     for r_type in avg_scores.keys():
         for m_type in avg_scores[r_type].keys():
             x = avg_scores[r_type][m_type]
             avg_scores[r_type][m_type] = np.mean(x)
 
+    if outpath:
+        with open(outpath, 'w') as fout:
+            for s in save_scores:
+                fout.write(json.dumps(s) + '\n')
+
+    shutil.rmtree(tmp_path)
     return avg_scores
 
 def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
@@ -114,7 +150,10 @@ def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
                 fout.write(hypothesis + '\n')
                 fout.flush()
     ref_fname = 'test-multitarget.jsonl' if multitarget else 'test.jsonl'
-    r = test_rouge(pred_fname, os.path.join(datadir, ref_fname))
+    ref_fname = os.path.join(datadir, ref_fname)
+    r = test_rouge(pred_fname, 
+                    ref_fname, 
+                    outpath=os.path.join(outdir, test_fname + '.rouge'))
     # r = filter_rouge(r)
 
     return r
@@ -127,6 +166,7 @@ def tune_decoder_params(bart, bsz, count, datadir,
     
     beams = list(range(2,9))
     lenpens = list(np.arange(0.2, 1.2, 0.2))
+    lenpens = [round(l, 2) for l in lenpens]
     
     n = len(beams) * len(lenpens)
     pbar = tqdm(total=n)
@@ -159,13 +199,24 @@ def tune_decoder_params(bart, bsz, count, datadir,
             pbar.update(1)
     pbar.close()
     print(f'Best beam: {best_beam} \t Best lenpen: {best_lenpen}')
+    r['beam'] = best_beam
+    r['lenpen'] = best_lenpen
+    return r
+
+def maybe_percentages(r, percentages):
+    if percentages:
+        for r_type in ['rouge-1', 'rouge-2', 'rouge-l']:
+            for m_type in ['f', 'p', 'r']:
+                x = r[r_type][m_type]
+                r[r_type][m_type] = x * 100
     return r
 
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('datadir', default='tldr_data_ao')
-    parser.add_argument('--checkpoint_file', default='checkpoint_best.pt')
-    parser.add_argument('--checkpoint_dir', default='checkpoints/')
+    # parser.add_argument('--datafile', help='path to datafile, overrides datadir')
+    parser.add_argument('--checkpoint_file', default='')
+    parser.add_argument('--checkpoint_dir', default='')
     # parser.add_argument('--datadir', default='tldr_data/')
     parser.add_argument('--outdir', default='')
     parser.add_argument('--count', default=1, type=int)
@@ -173,41 +224,81 @@ if __name__=='__main__':
     parser.add_argument('--test_fname', default='test.hypo')
     parser.add_argument('--beam', default=6, type=int)
     parser.add_argument('--lenpen', default=1.0, type=float)
-    parser.add_argument('--max_len_b', default=60, type=int)
-    parser.add_argument('--min_len', default=10, type=int)
+    parser.add_argument('--max_len_b', default=30, type=int)
+    parser.add_argument('--min_len', default=5, type=int)
     parser.add_argument('--no_repeat_ngram_size', default=3, type=int)
     parser.add_argument('--tune', action='store_true', default=False)
     parser.add_argument('--multitarget', action='store_true', default=False)
+    parser.add_argument('--rouge_only', action='store_true', default=False, help='flag if you don\'t want to run predictions')
+    parser.add_argument('--percentages', action='store_true', default=False, help='flag if you want to print as percentages')
     args = parser.parse_args()
 
-    bart = BARTModel.from_pretrained(
-        args.checkpoint_dir,
-        checkpoint_file=args.checkpoint_file,
-        data_name_or_path=args.datadir + '-bin',
-        task='translation'
-    )
-
-    decoder_params ={
-        'beam': args.beam,
-        'lenpen': args.lenpen,
-        'max_len_b': args.max_len_b,
-        'min_len': args.min_len, 
-        'no_repeat_ngram_size': args.no_repeat_ngram_size
-    }
+    start = time.time()
+    #### Path checks
+    if not os.path.exists(args.datadir):
+        print(f'{args.datadir} does not exist')
+        exit(0)
+    if not os.path.exists(join(args.datadir, 'test.source')):
+        print(f'{join(args.datadir, "test.source")} does not exist')
+        exit(0)
+    if not os.path.exists(join(args.datadir, 'test.jsonl')):
+        print('Data path does not exist')
+        exit(0)
+    if (not os.path.exists(join(args.checkpoint_dir, args.checkpoint_file))) and (not args.rouge_only):
+        print(f'{join(args.checkpoint_dir, args.checkpoint_file)} does not exist')
+        exit(0)
 
     if not args.outdir:
-        args.outdir = args.checkpoint_dir
+            args.outdir = args.checkpoint_dir
+    os.makedirs(args.outdir, exist_ok=True)
 
-    if args.tune:
-        pprint(tune_decoder_params(bart, args.bsz, args.count, 
-                args.datadir,
-                args.max_len_b, args.min_len, args.no_repeat_ngram_size, 
-                args.outdir, 
-                test_fname=args.test_fname,
-                multitarget=args.multitarget))
+    if args.rouge_only:
+        ref_fname = 'test-multitarget.jsonl' if args.multitarget else 'test.jsonl'
+        r = test_rouge(join(args.outdir, args.test_fname), os.path.join(args.datadir, ref_fname), 
+                    outpath=os.path.join(args.outdir, args.test_fname + '.rouge'))
+        # r['beam'] = args.beam
+        # r['lenpen'] = args.lenpen
+        pprint(maybe_percentages(r, args.percentages))
+
     else:
-        pprint(evaluate(bart, args.bsz, args.count, 
-                args.datadir, args.outdir, 
-                decoder_params, 
-                test_fname=args.test_fname,
-                multitarget=args.multitarget))
+        if args.datadir.endswith('/'):
+            args.datadir = args.datadir[:-1]
+
+        bart = BARTModel.from_pretrained(
+            args.checkpoint_dir,
+            checkpoint_file=args.checkpoint_file,
+            data_name_or_path=args.datadir + '-bin',
+            task='translation'
+        )
+
+        decoder_params ={
+            'beam': args.beam,
+            'lenpen': args.lenpen,
+            'max_len_b': args.max_len_b,
+            'min_len': args.min_len, 
+            'no_repeat_ngram_size': args.no_repeat_ngram_size
+        }
+
+        if args.tune:
+            r = tune_decoder_params(bart, args.bsz, args.count, 
+                    args.datadir,
+                    args.max_len_b, args.min_len, args.no_repeat_ngram_size, 
+                    args.outdir, 
+                    test_fname=args.test_fname,
+                    multitarget=args.multitarget)
+            pprint(maybe_percentages(r, args.percentages))
+        else:
+            r = evaluate(bart, args.bsz, args.count, 
+                    args.datadir, args.outdir, 
+                    decoder_params, 
+                    test_fname=args.test_fname,
+                    multitarget=args.multitarget)
+            r['beam'] = args.beam
+            r['lenpen'] = args.lenpen
+            pprint(maybe_percentages(r, args.percentages))
+    
+    with open(join(args.outdir, args.test_fname + '.score'), 'w') as fout:
+        fout.write(json.dumps(r, indent=4))
+
+    end = time.time()
+    print(f'Time to run script: {(end-start)} sec')
