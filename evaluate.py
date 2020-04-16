@@ -17,7 +17,7 @@ import shutil
 import files2rouge
 import time
 
-def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/'):
+def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/', multitarget=False, quick=False):
     print(cand)
     print(ref)
     def random_string(stringLength=8):
@@ -33,10 +33,17 @@ def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/'):
     candidates = [line.strip().lower() for line in open(cand, encoding='utf-8')]
     references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
     paper_ids = [json.loads(line.strip())['paper_id'] for line in open(ref, encoding='utf-8')]
-    assert len(candidates) == len(references), f'{temp_dir}: len cand {len(candidates)} len ref {len(references)}'
+    assert len(candidates) == len(references), f'{tmp_dir}: len cand {len(candidates)} len ref {len(references)}'
 
-    cnt = len(candidates)
-    # evaluator = rouge.Rouge()
+    if quick and not multitarget:
+        hyp = open(join(tmp_path, 'hyp.txt'), 'w')
+        hyp.write('\n'.join([c.replace('\n', '') for c in candidates]))
+        hyp.close()
+        ref = open(join(tmp_path, 'ref.txt'), 'w')
+        ref.write('\n'.join([r.lower().replace('\n', '') for r in references]))
+        ref.close()
+        _r = files2rouge.run(ref_path, hyp_path, to_json=True)
+        return _r
 
     all_scores = []
     save_scores = []
@@ -45,8 +52,6 @@ def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/'):
     for cand_idx, cand in enumerate(candidates):
         curr_targets = references[cand_idx]
         curr_scores = []
-        if type(curr_targets) == str:
-            curr_targets = [curr_targets]
         hyp = open(join(tmp_path, 'hyp.txt'), 'w')
         hyp.write(cand)
         hyp.close()
@@ -112,7 +117,7 @@ def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/'):
     return avg_scores
 
 def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
-            test_fname='test.hypo', multitarget=False):
+            test_fname='test.hypo', multitarget=False, quick=False):
     # device = f'cuda:{visible_device}' if visible_device != -1 and torch.cuda.is_available() else 'cpu'
     # bart.to(torch.device(device))
     bart.cuda()
@@ -147,13 +152,14 @@ def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
                                                     min_len=decoder_params['min_len'],
                                                     no_repeat_ngram_size=decoder_params['no_repeat_ngram_size'])
             for hypothesis in hypotheses_batch:
-                fout.write(hypothesis + '\n')
+                fout.write(hypothesis.replace('\n', '') + '\n')
                 fout.flush()
     ref_fname = 'test-multitarget.jsonl' if multitarget else 'test.jsonl'
     ref_fname = os.path.join(datadir, ref_fname)
     r = test_rouge(pred_fname, 
                     ref_fname, 
-                    outpath=os.path.join(outdir, test_fname + '.rouge'))
+                    outpath=os.path.join(outdir, test_fname + '.rouge'),
+                    multitarget=multitarget, quick=quick)
     # r = filter_rouge(r)
 
     return r
@@ -161,7 +167,7 @@ def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
 def tune_decoder_params(bart, bsz, count, datadir, 
                         max_len_b, min_len, no_repeat_ngram_size,
                         outdir, test_fname='test.hypo',
-                        multitarget=False):
+                        multitarget=False, quick=False):
     print('Tuning decoder params...')
     
     beams = list(range(2,9))
@@ -189,7 +195,7 @@ def tune_decoder_params(bart, bsz, count, datadir,
 
             r = evaluate(bart, bsz, count, datadir, outdir, decoder_params,
                         test_fname=f'tune-beam{b}-lenpen{l}-{test_fname}',
-                        multitarget=multitarget)
+                        multitarget=multitarget, quick=quick)
 
             if float(r['rouge-1']['f']) > best_r1:
                 best_r1 = r['rouge-1']['f']
@@ -229,6 +235,7 @@ if __name__=='__main__':
     parser.add_argument('--no_repeat_ngram_size', default=3, type=int)
     parser.add_argument('--tune', action='store_true', default=False)
     parser.add_argument('--multitarget', action='store_true', default=False)
+    parser.add_argument('--quick', action='store_true', default=False)
     parser.add_argument('--rouge_only', action='store_true', default=False, help='flag if you don\'t want to run predictions')
     parser.add_argument('--percentages', action='store_true', default=False, help='flag if you want to print as percentages')
     args = parser.parse_args()
@@ -255,7 +262,8 @@ if __name__=='__main__':
     if args.rouge_only:
         ref_fname = 'test-multitarget.jsonl' if args.multitarget else 'test.jsonl'
         r = test_rouge(join(args.outdir, args.test_fname), os.path.join(args.datadir, ref_fname), 
-                    outpath=os.path.join(args.outdir, args.test_fname + '.rouge'))
+                    outpath=os.path.join(args.outdir, args.test_fname + '.rouge'),
+                    multitarget=args.multitarget, quick=args.quick)
         # r['beam'] = args.beam
         # r['lenpen'] = args.lenpen
         pprint(maybe_percentages(r, args.percentages))
@@ -285,14 +293,16 @@ if __name__=='__main__':
                     args.max_len_b, args.min_len, args.no_repeat_ngram_size, 
                     args.outdir, 
                     test_fname=args.test_fname,
-                    multitarget=args.multitarget)
+                    multitarget=args.multitarget,
+                    quick=args.quick)
             pprint(maybe_percentages(r, args.percentages))
         else:
             r = evaluate(bart, args.bsz, args.count, 
                     args.datadir, args.outdir, 
                     decoder_params, 
                     test_fname=args.test_fname,
-                    multitarget=args.multitarget)
+                    multitarget=args.multitarget,
+                    quick=args.quick)
             r['beam'] = args.beam
             r['lenpen'] = args.lenpen
             pprint(maybe_percentages(r, args.percentages))
