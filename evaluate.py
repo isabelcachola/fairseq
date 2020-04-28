@@ -196,7 +196,9 @@ def tune_decoder_params(bart, bsz, count, datadir,
             r = evaluate(bart, bsz, count, datadir, outdir, decoder_params,
                         test_fname=f'tune-beam{b}-lenpen{l}-{test_fname}',
                         multitarget=multitarget, quick=quick)
-
+            with open(join(outdir, f'tune-beam{b}-lenpen{l}-{test_fname}.score'), 'w') as fscore:
+                json.dump(r, fscore, indent=4)
+            # print(float(r['rouge-1']['f']), best_r1,float(r['rouge-1']['f']) > best_r1)
             if float(r['rouge-1']['f']) > best_r1:
                 best_r1 = r['rouge-1']['f']
                 best_r = r
@@ -205,9 +207,9 @@ def tune_decoder_params(bart, bsz, count, datadir,
             pbar.update(1)
     pbar.close()
     print(f'Best beam: {best_beam} \t Best lenpen: {best_lenpen}')
-    r['beam'] = best_beam
-    r['lenpen'] = best_lenpen
-    return r
+    best_r['beam'] = best_beam
+    best_r['lenpen'] = best_lenpen
+    return best_r
 
 def maybe_percentages(r, percentages):
     if percentages:
@@ -257,6 +259,8 @@ if __name__=='__main__':
 
     if not args.outdir:
             args.outdir = args.checkpoint_dir
+    if args.tune:
+        args.outdir = os.path.join(args.outdir, 'tuning')
     os.makedirs(args.outdir, exist_ok=True)
 
     if args.rouge_only:
