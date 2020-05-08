@@ -31,8 +31,10 @@ def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/', multitarget=False, quic
     ref_path = join(tmp_path, 'ref.txt')
 
     candidates = [line.strip().lower() for line in open(cand, encoding='utf-8')]
-    references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
-    paper_ids = [json.loads(line.strip())['paper_id'] for line in open(ref, encoding='utf-8')]
+    if multitarget or not quick:
+        references = [json.loads(line.strip())['target'] for line in open(ref, encoding='utf-8')]
+    else:
+        references = [line.lower().strip() for line in open(ref, encoding='utf-8')]
     assert len(candidates) == len(references), f'{tmp_dir}: len cand {len(candidates)} len ref {len(references)}'
 
     if quick and not multitarget:
@@ -45,6 +47,7 @@ def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/', multitarget=False, quic
         _r = files2rouge.run(ref_path, hyp_path, to_json=True)
         return _r
 
+    paper_ids = [json.loads(line.strip())['paper_id'] for line in open(ref, encoding='utf-8')]
     all_scores = []
     save_scores = []
 
@@ -154,7 +157,7 @@ def evaluate(bart, bsz, count, datadir, outdir, decoder_params,
             for hypothesis in hypotheses_batch:
                 fout.write(hypothesis.replace('\n', '') + '\n')
                 fout.flush()
-    ref_fname = 'test-multitarget.jsonl' if multitarget else 'test.jsonl'
+    ref_fname = 'test-multitarget.jsonl' if (multitarget or not quick) else 'test.target'
     ref_fname = os.path.join(datadir, ref_fname)
     r = test_rouge(pred_fname, 
                     ref_fname, 
@@ -250,8 +253,8 @@ if __name__=='__main__':
     if not os.path.exists(join(args.datadir, 'test.source')):
         print(f'{join(args.datadir, "test.source")} does not exist')
         exit(0)
-    if not os.path.exists(join(args.datadir, 'test.jsonl')):
-        print('Data path does not exist')
+    if not os.path.exists(join(args.datadir, 'test.target')):
+        print(f'{os.path.exists(join(args.datadir, "test.target")} does not exist')
         exit(0)
     if (not os.path.exists(join(args.checkpoint_dir, args.checkpoint_file))) and (not args.rouge_only):
         print(f'{join(args.checkpoint_dir, args.checkpoint_file)} does not exist')
