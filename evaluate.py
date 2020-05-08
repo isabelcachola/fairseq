@@ -254,7 +254,7 @@ if __name__=='__main__':
         print(f'{join(args.datadir, "test.source")} does not exist')
         exit(0)
     if not os.path.exists(join(args.datadir, 'test.target')):
-        print(f'{os.path.exists(join(args.datadir, "test.target")} does not exist')
+        print(f'{join(args.datadir, "test.target")} does not exist')
         exit(0)
     if (not os.path.exists(join(args.checkpoint_dir, args.checkpoint_file))) and (not args.rouge_only):
         print(f'{join(args.checkpoint_dir, args.checkpoint_file)} does not exist')
