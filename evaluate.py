@@ -86,7 +86,7 @@ def test_rouge(cand, ref, outpath=None, tmp_dir='/tmp/', multitarget=False, quic
     hyp = open(hyp_path, 'w')
     ref = open(ref_path, 'w')
     for score in save_scores:
-        hyp.write(score['prediction'] + '\n')
+        hyp.write(score['prediction'].lower() + '\n')
         ref.write(score['target'][score['max_idx']].lower().strip('\n') + '\n')
     hyp.close()
     ref.close()
