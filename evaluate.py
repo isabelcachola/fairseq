@@ -232,6 +232,7 @@ def main(args):
     parser.add_argument('--quick', action='store_true', default=False)
     parser.add_argument('--rouge_only', action='store_true', default=False, help='flag if you don\'t want to run predictions')
     parser.add_argument('--percentages', action='store_true', default=False, help='flag if you want to print as percentages')
+    parser.add_argument('--gen_only', action='store_true', default=False, help='flag if you want only generate predictions')
     args = parser.parse_args()
 
     start = time.time()
@@ -304,13 +305,17 @@ def main(args):
                 decoder_params, 
                 test_fname=args.test_fname,
                 multitarget=args.multitarget,
-                quick=args.quick, rouge_only=args.rouge_only)
-        r['beam'] = args.beam
-        r['lenpen'] = args.lenpen
-        pprint(maybe_percentages(r, args.percentages))
-    
-    with open(join(args.outdir, args.test_fname + '.score'), 'w') as fout:
-        fout.write(json.dumps(r, indent=4))
+                quick=args.quick, 
+                rouge_only=args.rouge_only,
+                gen_only=args.gen_only)
+        if not args.gen_only:
+            r['beam'] = args.beam
+            r['lenpen'] = args.lenpen
+            pprint(maybe_percentages(r, args.percentages))
+
+    if not args.gen_only:   
+        with open(join(args.outdir, args.test_fname + '.score'), 'w') as fout:
+          fout.write(json.dumps(r, indent=4))
 
     end = time.time()
     print(f'Time to run script: {(end-start)} sec')
